@@ -86,18 +86,13 @@ client.on('messageCreate', async (message) => {
         
         const dateString = `Today at ${timeString}`;
         
-        // Create age display if found
-        const ageDisplay = result.age ? `${result.age} ` : '';
-        const emojiDisplay = result.age ? '❤️' : '';
-        
-        // Create embed EXACTLY like your example
+        // Create the embed
         const embed = new EmbedBuilder()
           .setColor('#2b2d31')
           .setDescription(
             `**APP**\n` +
             `**${dateString}**\n\n` +
             `**${message.author.username}**\n` +
-            `${ageDisplay}${emojiDisplay}\n` +
             `\`id: ${message.author.id} | reason: ${result.reasons[0] || 'suspicious content'} |\`\n` +
             `\`${dateString}\`\n\n` +
             `✅ ban • ⚠️ ignore`
@@ -112,22 +107,20 @@ client.on('messageCreate', async (message) => {
             new ButtonBuilder()
               .setCustomId(`ban_${message.author.id}`)
               .setLabel('ban')
-              .setStyle(ButtonStyle.Danger),
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji('✅'),
             new ButtonBuilder()
               .setCustomId(`ignore_${message.author.id}`)
               .setLabel('ignore')
               .setStyle(ButtonStyle.Secondary)
+              .setEmoji('⚠️')
           );
         
         // Send embed with buttons
-        const logMessage = await logChannel.send({ 
+        await logChannel.send({ 
           embeds: [embed],
           components: [row]
         });
-        
-        // Add reactions
-        await logMessage.react('✅');
-        await logMessage.react('⚠️');
         
         console.log(`📝 Logged: ${message.author.username}`);
       }
@@ -147,61 +140,52 @@ client.on('interactionCreate', async (interaction) => {
   if (action === 'ban') {
     try {
       const member = await interaction.guild.members.fetch(userId);
-      await member.ban({ reason: 'Auto-mod: Underage' });
-      await interaction.reply({ content: `✅ Banned ${member.user.tag}`, ephemeral: true });
+      await member.ban({ reason: 'Auto-mod: Underage detection' });
       
-      const embed = EmbedBuilder.from(interaction.message.embeds[0])
-        .setFooter({ text: `banned by ${interaction.user.tag}` });
-      await interaction.message.edit({ embeds: [embed], components: [] });
+      // Update the original embed
+      const originalEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
+      const updatedEmbed = new EmbedBuilder()
+        .setColor('#ff0000')
+        .setDescription(originalEmbed.data.description)
+        .setFooter({ text: `banned by ${interaction.user.username}` });
+      
+      await interaction.message.edit({ 
+        embeds: [updatedEmbed],
+        components: [] // Remove buttons after action
+      });
+      
+      await interaction.reply({ 
+        content: `✅ Banned ${member.user.tag}`, 
+        ephemeral: true 
+      });
       
     } catch (error) {
-      await interaction.reply({ content: '❌ Could not ban', ephemeral: true });
+      console.log('Ban error:', error.message);
+      await interaction.reply({ 
+        content: '❌ Could not ban user (insufficient permissions or user not found)', 
+        ephemeral: true 
+      });
     }
   }
   
   if (action === 'ignore') {
-    await interaction.reply({ content: '⚠️ Ignored', ephemeral: true });
+    // Update the original embed
+    const originalEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
+    const updatedEmbed = new EmbedBuilder()
+      .setColor('#808080')
+      .setDescription(originalEmbed.data.description)
+      .setFooter({ text: `ignored by ${interaction.user.username}` });
     
-    const embed = EmbedBuilder.from(interaction.message.embeds[0])
-      .setFooter({ text: `ignored by ${interaction.user.tag}` });
-    await interaction.message.edit({ embeds: [embed], components: [] });
+    await interaction.message.edit({ 
+      embeds: [updatedEmbed],
+      components: [] // Remove buttons after action
+    });
+    
+    await interaction.reply({ 
+      content: `⚠️ Ignored ${interaction.customId.split('_')[1]}`, 
+      ephemeral: true 
+    });
   }
-});
-
-// Handle reactions
-client.on('messageReactionAdd', async (reaction, user) => {
-  if (user.bot) return;
-  if (reaction.message.channel.id !== LOG_CHANNEL_ID) return;
-  
-  const embed = reaction.message.embeds[0];
-  if (!embed) return;
-  
-  const idMatch = embed.description?.match(/id:\s*(\d+)/);
-  if (!idMatch) return;
-  
-  const userId = idMatch[1];
-  
-  if (reaction.emoji.name === '✅') {
-    try {
-      const member = await reaction.message.guild.members.fetch(userId);
-      await member.ban({ reason: 'Reaction ban' });
-      
-      const updatedEmbed = EmbedBuilder.from(embed)
-        .setFooter({ text: `banned by ${user.tag}` });
-      await reaction.message.edit({ embeds: [updatedEmbed], components: [] });
-      
-    } catch (error) {
-      console.log('Ban error:', error.message);
-    }
-  }
-  
-  if (reaction.emoji.name === '⚠️') {
-    const updatedEmbed = EmbedBuilder.from(embed)
-      .setFooter({ text: `ignored by ${user.tag}` });
-    await reaction.message.edit({ embeds: [updatedEmbed], components: [] });
-  }
-  
-  await reaction.users.remove(user.id);
 });
 
 // Health check
@@ -209,7 +193,11 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.get('/', (req, res) => {
-  res.json({ status: 'online', bot: client.user?.tag || 'Starting...' });
+  res.json({ 
+    status: 'online', 
+    bot: client.user?.tag || 'Starting...',
+    uptime: process.uptime()
+  });
 });
 
 app.listen(PORT, () => {
