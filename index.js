@@ -20,40 +20,47 @@ function checkMessage(content) {
   const redFlags = [];
   let detectedAge = null;
   
-  // Check for underage (ONLY 1-17)
-  const ageMatch = content.match(/\b(1[0-7])\s*(?:m|f|male|female|yo|years?)?\b/i);
-  if (ageMatch) {
-    const age = parseInt(ageMatch[1]);
-    if (age < 18) {
-      redFlags.push('underage');
-      detectedAge = age;
-    }
+  const cleanContent = content.toLowerCase();
+  
+  // 1. Underage with context
+  const underageMatch = cleanContent.match(/\b(1[0-7])\s*(?:m|f|male|female|yo|yrs?|years?|y\.o\.|age)\b/);
+  if (underageMatch) {
+    const age = parseInt(underageMatch[1]);
+    redFlags.push(`underage (${age})`);
+    detectedAge = age;
   }
   
-  // Reversal symbols
+  // 2. Reversal symbols
   if (/[🔄↩↪]/.test(content)) {
     redFlags.push('reversal symbols');
   }
   
-  // Seeking older
+  // 3. "dm" + number (suspicious)
+  const dmPattern = cleanContent.match(/(\d{1,2})\s*dm\b|\bdm\s*(\d{1,2})\b/);
+  if (dmPattern) {
+    redFlags.push('dm with age');
+  }
+  
+  // 4. "looking for older"
   if (/looking for.*(?:older|daddy|mature)/i.test(content)) {
     redFlags.push('seeking older');
   }
   
-  // DMs open with underage
-  if (/dms? open.*\b(1[0-7])\b/i.test(content)) {
-    redFlags.push('dms open');
+  // 5. Suspicious high age (40+)
+  if (/([4-9][0-9]|100)\s*(?:m|f)/i.test(content)) {
+    redFlags.push('suspicious age');
   }
   
-  // Suspicious high age (50+)
-  if (/(5[0-9]|6[0-9]|7[0-9])\s*(?:m|f)/i.test(content)) {
-    redFlags.push('suspiciously high age');
+  // 6. DMs open + number
+  if (/dms? open/i.test(cleanContent) && /\b\d{1,2}\b/.test(cleanContent)) {
+    redFlags.push('dms open');
   }
   
   return {
     isBad: redFlags.length > 0,
     reasons: redFlags,
     age: detectedAge,
+    originalMessage: content,
     score: redFlags.length * 30
   };
 }
@@ -86,7 +93,12 @@ client.on('messageCreate', async (message) => {
         
         const dateString = `Today at ${timeString}`;
         
-        // Create the embed
+        // Truncate message if too long
+        const truncatedMessage = message.content.length > 500 
+          ? message.content.substring(0, 497) + '...' 
+          : message.content;
+        
+        // Create the embed WITH ORIGINAL MESSAGE
         const embed = new EmbedBuilder()
           .setColor('#2b2d31')
           .setDescription(
@@ -95,22 +107,23 @@ client.on('messageCreate', async (message) => {
             `**${message.author.username}**\n` +
             `\`id: ${message.author.id} | reason: ${result.reasons[0] || 'suspicious content'} |\`\n` +
             `\`${dateString}\`\n\n` +
+            `**Message:**\n${truncatedMessage}\n\n` +
             `✅ ban • ⚠️ ignore`
           )
           .setFooter({ 
-            text: `ignored by @so? (edited)`
+            text: `pending action` // Shows it's waiting for action
           });
         
         // Create buttons
         const row = new ActionRowBuilder()
           .addComponents(
             new ButtonBuilder()
-              .setCustomId(`ban_${message.author.id}`)
+              .setCustomId(`ban_${message.author.id}_${message.id}`)
               .setLabel('ban')
               .setStyle(ButtonStyle.Danger)
               .setEmoji('✅'),
             new ButtonBuilder()
-              .setCustomId(`ignore_${message.author.id}`)
+              .setCustomId(`ignore_${message.author.id}_${message.id}`)
               .setLabel('ignore')
               .setStyle(ButtonStyle.Secondary)
               .setEmoji('⚠️')
@@ -122,7 +135,7 @@ client.on('messageCreate', async (message) => {
           components: [row]
         });
         
-        console.log(`📝 Logged: ${message.author.username}`);
+        console.log(`📝 Logged: ${message.author.username} - ${result.reasons[0]}`);
       }
       
     } catch (error) {
@@ -135,56 +148,95 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
-  const [action, userId] = interaction.customId.split('_');
+  const [action, userId, messageId] = interaction.customId.split('_');
+  const now = new Date();
+  const actionTime = now.toLocaleTimeString('en-US', { 
+    hour: 'numeric', 
+    minute: '2-digit', 
+    hour12: true 
+  }).toLowerCase();
+  const actionDate = now.toLocaleDateString('en-US', { 
+    month: 'short', 
+    day: 'numeric' 
+  });
+  
+  // Get original embed data
+  const originalEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
+  const embedData = originalEmbed.data;
   
   if (action === 'ban') {
     try {
+      // Try to ban the user
       const member = await interaction.guild.members.fetch(userId);
-      await member.ban({ reason: 'Auto-mod: Underage detection' });
+      await member.ban({ reason: `Auto-mod: ${embedData.description?.split('reason: ')[1]?.split(' |')[0] || 'Suspicious content'}` });
       
-      // Update the original embed
-      const originalEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
+      // Update embed to show BANNED status with timestamp
       const updatedEmbed = new EmbedBuilder()
-        .setColor('#ff0000')
-        .setDescription(originalEmbed.data.description)
-        .setFooter({ text: `banned by ${interaction.user.username}` });
+        .setColor('#ff0000') // Red for ban
+        .setDescription(embedData.description)
+        .setFooter({ 
+          text: `banned by @${interaction.user.username} • ${actionDate} at ${actionTime}` 
+        });
       
+      // Edit original message to remove buttons and show action
       await interaction.message.edit({ 
         embeds: [updatedEmbed],
-        components: [] // Remove buttons after action
+        components: [] // Remove buttons
       });
       
+      // Send confirmation (ephemeral - only moderator sees)
       await interaction.reply({ 
         content: `✅ Banned ${member.user.tag}`, 
         ephemeral: true 
       });
       
+      console.log(`🔨 Banned ${member.user.tag} by ${interaction.user.tag}`);
+      
     } catch (error) {
       console.log('Ban error:', error.message);
+      
+      // Still update embed to show attempted action
+      const failedEmbed = new EmbedBuilder()
+        .setColor('#ff9900') // Orange/yellow for failed
+        .setDescription(embedData.description)
+        .setFooter({ 
+          text: `ban attempted by @${interaction.user.username} • ${actionDate} at ${actionTime} (failed)` 
+        });
+      
+      await interaction.message.edit({ 
+        embeds: [failedEmbed],
+        components: []
+      });
+      
       await interaction.reply({ 
-        content: '❌ Could not ban user (insufficient permissions or user not found)', 
+        content: `❌ Could not ban user: ${error.message}`, 
         ephemeral: true 
       });
     }
   }
   
   if (action === 'ignore') {
-    // Update the original embed
-    const originalEmbed = EmbedBuilder.from(interaction.message.embeds[0]);
+    // Update embed to show IGNORED status with timestamp
     const updatedEmbed = new EmbedBuilder()
-      .setColor('#808080')
-      .setDescription(originalEmbed.data.description)
-      .setFooter({ text: `ignored by ${interaction.user.username}` });
+      .setColor('#808080') // Grey for ignore
+      .setDescription(embedData.description)
+      .setFooter({ 
+        text: `ignored by @${interaction.user.username} • ${actionDate} at ${actionTime}` 
+      });
     
+    // Edit original message to remove buttons and show action
     await interaction.message.edit({ 
       embeds: [updatedEmbed],
-      components: [] // Remove buttons after action
+      components: [] // Remove buttons
     });
     
+    // Send confirmation
     await interaction.reply({ 
-      content: `⚠️ Ignored ${interaction.customId.split('_')[1]}`, 
+      content: `⚠️ Ignored user ${userId}`, 
       ephemeral: true 
     });
+    
+    console.log(`👁️ Ignored ${userId} by ${interaction.user.tag}`);
   }
 });
 
