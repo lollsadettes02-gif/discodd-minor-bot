@@ -15,27 +15,24 @@ const client = new Client({
 
 const YOUR_SERVER_ID = '1447204367089270874';
 const LOG_CHANNEL_ID = '1457870506505011331';
+const SPECIFIC_CHANNEL_ID = '1447208095217619055'; // Your specific channel
 
-// Whitelisted channels or commands (optional)
-const ALLOWED_CHANNELS = []; // Add channel IDs that don't need age
-const ALLOWED_COMMANDS = ['!help', '!rules', '!age'];
-
-function checkMessage(content) {
+function checkMessage(content, attachments, channelId) {
   const redFlags = [];
   let detectedAge = null;
   let ageInMessage = false;
   
   const cleanContent = content.toLowerCase();
   
-  // ====== CHECK 1: MUST INCLUDE AGE ======
+  // ====== AGE DETECTION ======
   const agePatterns = [
-    /\b(\d{1,2})\s*(?:m|f|male|female)\b/i,      // "19m", "21f"
-    /\b(\d{1,2})\s*(?:yo|y\.o\.)\b/i,            // "19yo", "21 y.o."
-    /\b(\d{1,2})\s*(?:years?|yrs?)\s*old\b/i,    // "19 years old"
-    /\b(\d{1,2})\s*(?:years?|yrs?)\b/i,          // "19 years"
-    /\bage\s*(\d{1,2})\b/i,                      // "age 19"
-    /\b(\d{1,2})\s*\/\s*[mf]\b/i,                // "19/m"
-    /\b[MF]\s*\/\s*(\d{1,2})\b/i,                // "M/19"
+    /\b(\d{1,2})\s*(?:m|f|male|female)\b/i,
+    /\b(\d{1,2})\s*(?:yo|y\.o\.)\b/i,
+    /\b(\d{1,2})\s*(?:years?|yrs?)\s*old\b/i,
+    /\b(\d{1,2})\s*(?:years?|yrs?)\b/i,
+    /\bage\s*(\d{1,2})\b/i,
+    /\b(\d{1,2})\s*\/\s*[mf]\b/i,
+    /\b[MF]\s*\/\s*(\d{1,2})\b/i,
   ];
   
   // Check if ANY age pattern exists
@@ -48,12 +45,37 @@ function checkMessage(content) {
     }
   }
   
-  // If NO age found in message
-  if (!ageInMessage) {
-    redFlags.push('no age provided');
+  // ====== SPECIFIC CHANNEL RULES ======
+  if (channelId === SPECIFIC_CHANNEL_ID) {
+    // Rule 1: MUST have age
+    if (!ageInMessage) {
+      redFlags.push('no age (channel rule)');
+    }
+    
+    // Rule 2: MUST have attachments (images/videos)
+    const hasAttachments = attachments.size > 0;
+    if (!hasAttachments) {
+      redFlags.push('no attachments (channel rule)');
+    } else {
+      // Check attachments are NOT links (must be uploaded files)
+      const allAttachments = Array.from(attachments.values());
+      const hasLinks = allAttachments.some(att => 
+        att.url.match(/\.(com|net|org|io|me|xyz|link|url)\//i) ||
+        att.url.includes('http') && !att.url.includes('cdn.discordapp.com')
+      );
+      
+      if (hasLinks) {
+        redFlags.push('links not allowed (channel rule)');
+      }
+    }
+  } else {
+    // REGULAR CHANNELS: Just need age
+    if (!ageInMessage) {
+      redFlags.push('no age provided');
+    }
   }
   
-  // ====== CHECK 2: AGE VALIDATION ======
+  // ====== UNDERAGE DETECTION (ALL CHANNELS) ======
   if (detectedAge !== null) {
     if (detectedAge < 18) {
       redFlags.push(`underage (${detectedAge})`);
@@ -62,7 +84,7 @@ function checkMessage(content) {
     }
   }
   
-  // ====== CHECK 3: OTHER RED FLAGS ======
+  // ====== OTHER RED FLAGS ======
   if (/[🔄↩↪]/.test(content)) {
     redFlags.push('reversal symbols');
   }
@@ -81,12 +103,14 @@ function checkMessage(content) {
     age: detectedAge,
     noAgeProvided: !ageInMessage,
     originalMessage: content,
+    hasAttachments: attachments.size > 0,
     score: redFlags.length * 30
   };
 }
 
 client.once('ready', () => {
   console.log(`✅ Bot online: ${client.user.tag}`);
+  console.log(`✅ Specific channel: ${SPECIFIC_CHANNEL_ID} (age + attachments required)`);
   client.user.setActivity('checking ages ⚠️', { type: 'WATCHING' });
 });
 
@@ -94,30 +118,22 @@ client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild || message.guild.id !== YOUR_SERVER_ID) return;
   
-  // Check if in allowed channel
-  if (ALLOWED_CHANNELS.includes(message.channel.id)) return;
-  
-  // Check if it's an allowed command
-  const isCommand = ALLOWED_COMMANDS.some(cmd => 
-    message.content.toLowerCase().startsWith(cmd)
-  );
-  if (isCommand) return;
-  
-  const result = checkMessage(message.content);
+  const result = checkMessage(message.content, message.attachments, message.channel.id);
   
   if (result.isBad) {
     try {
       await message.delete();
-      console.log(`🗑️ Deleted from ${message.author.tag} - ${result.reasons[0]}`);
+      console.log(`🗑️ Deleted from ${message.author.tag} in #${message.channel.name} - ${result.reasons[0]}`);
       
-      // Send warning to user if no age provided
-      if (result.noAgeProvided) {
+      // Only send DM warning for UNDERAGE, not for "no age" in specific channel
+      const isUnderage = result.reasons.some(r => r.includes('underage'));
+      if (isUnderage) {
         try {
           await message.author.send(
             `⚠️ **Your message in ${message.guild.name} was deleted.**\n` +
-            `**Reason:** You must include your age in your message (e.g., "19m looking for...", "21 femboy", etc.)\n` +
-            `**Examples:** "19m looking for friends", "21 femboy top", "25 M verse"\n` +
-            `Please include your age and gender in your next message.`
+            `**Reason:** ${result.reasons.join(', ')}\n` +
+            `**Channel:** ${message.channel.name}\n` +
+            `Please follow server rules.`
           );
         } catch (dmError) {
           // User has DMs closed
@@ -141,48 +157,40 @@ client.on('messageCreate', async (message) => {
           ? message.content.substring(0, 497) + '...' 
           : message.content;
         
-        // Determine embed color based on severity
-        let embedColor = '#2b2d31'; // Default gray
-        if (result.reasons.includes('underage')) {
-          embedColor = '#ff0000'; // Red for underage
-        } else if (result.noAgeProvided) {
-          embedColor = '#ff9900'; // Orange for no age
-        }
-        
-        // Create the embed
-        const embed = new EmbedBuilder()
-          .setColor(embedColor)
-          .setDescription(
-            `**APP**\n` +
-            `**${dateString}**\n\n` +
-            `**${message.author.username}**\n` +
-            `\`id: ${message.author.id} | reason: ${result.reasons[0] || 'no age provided'} |\`\n` +
-            `\`${dateString}\`\n\n` +
-            `**Message:**\n${truncatedMessage}\n\n` +
-            `✅ ban • ⚠️ ignore`
-          )
-          .setFooter({ 
-            text: `pending action` 
-          });
-        
-        // Only add ban/ignore buttons if underage or suspicious
+        // Determine if we should show buttons
         const shouldShowButtons = result.reasons.some(r => 
           r.includes('underage') || r.includes('suspicious')
         );
         
+        // Create the embed
+        const embed = new EmbedBuilder()
+          .setColor(shouldShowButtons ? '#2b2d31' : '#808080')
+          .setDescription(
+            `**APP**\n` +
+            `**${dateString}**\n\n` +
+            `**${message.author.username}**\n` +
+            `**Channel:** ${message.channel.name}\n` +
+            `\`id: ${message.author.id} | reason: ${result.reasons[0] || 'rule violation'} |\`\n` +
+            `\`${dateString}\`\n\n` +
+            `**Message:**\n${truncatedMessage}\n\n` +
+            (shouldShowButtons ? `✅ ban • ⚠️ ignore` : `⚠️ message deleted`)
+          )
+          .setFooter({ 
+            text: shouldShowButtons ? `pending action` : `auto-deleted` 
+          });
+        
         if (shouldShowButtons) {
+          // PROPER BUTTONS (not emojis in text)
           const row = new ActionRowBuilder()
             .addComponents(
               new ButtonBuilder()
                 .setCustomId(`ban_${message.author.id}_${message.id}`)
                 .setLabel('ban')
-                .setStyle(ButtonStyle.Danger)
-                .setEmoji('✅'),
+                .setStyle(ButtonStyle.Danger), // Red button
               new ButtonBuilder()
                 .setCustomId(`ignore_${message.author.id}_${message.id}`)
                 .setLabel('ignore')
-                .setStyle(ButtonStyle.Secondary)
-                .setEmoji('⚠️')
+                .setStyle(ButtonStyle.Secondary) // Grey button
             );
           
           await logChannel.send({ 
@@ -190,7 +198,7 @@ client.on('messageCreate', async (message) => {
             components: [row]
           });
         } else {
-          // For "no age provided", just log without buttons
+          // No buttons for simple rule violations
           await logChannel.send({ 
             embeds: [embed]
           });
@@ -205,7 +213,7 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// Handle button clicks (same as before)
+// Handle button clicks
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   
@@ -301,7 +309,7 @@ app.get('/', (req, res) => {
     status: 'online', 
     bot: client.user?.tag || 'Starting...',
     uptime: process.uptime(),
-    rule: 'Age required in all messages'
+    rules: `Channel ${SPECIFIC_CHANNEL_ID}: Age + Attachments required`
   });
 });
 
