@@ -1,80 +1,109 @@
-const { REST } = require('@discordjs/rest');
-const { Routes } = require('discord-api-types/v10');
 const axios = require('axios');
 
 const TOKEN = process.env.BOT_TOKEN;
 const GUILD_ID = '1447204367089270874';
 const VANITY = 'playmate';
-const CHECK_EVERY = 2000;
+const CHECK_EVERY = 1000; // 1 second
 
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-
-console.log('🔥 PLAYMATE SNIPER STARTING...');
+console.log('🚨 ULTIMATE SNIPER ACTIVATED');
 console.log(`🎯 Target: ${VANITY}`);
 console.log(`🏠 Server: ${GUILD_ID}`);
 
 let checks = 0;
-let lastLog = Date.now();
+let isClaiming = false;
 
 async function checkVanity() {
     try {
         await axios.get(`https://discord.com/api/v10/invites/${VANITY}`, {
             headers: { 'Authorization': `Bot ${TOKEN}` },
-            timeout: 3000
+            timeout: 2000
         });
-        return false;
+        return false; // 200 = taken
     } catch (err) {
-        if (err.response?.status === 404) return true;
+        if (err.response?.status === 404) return true; // 404 = FREE
         return false;
     }
 }
 
 async function claimVanity() {
+    if (isClaiming) return;
+    isClaiming = true;
+    
+    console.log(`🚨🚨🚨 ${VANITY} IS FREE! CLAIMING NOW...`);
+    
     try {
-        console.log(`🚀 ATTEMPTING TO CLAIM: ${VANITY}`);
-        
-        // FIXED: Use correct route
-        await rest.patch(
-            Routes.guild(GUILD_ID), // THIS IS THE FIX
-            { 
-                body: { code: VANITY },
-                headers: { 'Content-Type': 'application/json' }
+        const response = await axios.patch(
+            `https://discord.com/api/v10/guilds/${GUILD_ID}/vanity-url`,
+            { code: VANITY },
+            {
+                headers: {
+                    'Authorization': `Bot ${TOKEN}`,
+                    'Content-Type': 'application/json'
+                }
             }
         );
         
-        console.log(`✅ SUCCESS! https://discord.gg/${VANITY}`);
-        console.log('👁️ Still monitoring in case it gets stolen...');
+        console.log(`✅✅✅ SUCCESS! CLAIMED: ${VANITY}`);
+        console.log(`🔗 https://discord.gg/${VANITY}`);
+        console.log('Response:', JSON.stringify(response.data, null, 2));
         
-        // Optional: Add webhook notification here
-        // await sendDiscordNotification();
+        // Don't exit - keep monitoring
+        isClaiming = false;
         
-    } catch (err) {
-        console.log(`❌ Failed: ${err.message}`);
-        console.log(`Error code: ${err.code}`);
-        console.log(`Error details:`, err.rawError || 'No details');
+    } catch (error) {
+        console.log('❌ CLAIM FAILED!');
+        console.log('Status:', error.response?.status);
+        console.log('Error:', error.response?.data || error.message);
+        
+        // SPECIFIC ERRORS:
+        if (error.response?.data?.code === 50024) {
+            console.log('❌❌❌ SERVER MUST BE LEVEL 3!');
+            console.log('Need 500+ members and 7+ days old');
+        }
+        if (error.response?.data?.code === 30018) {
+            console.log('⚠️ Vanity already taken (too slow)');
+        }
+        if (error.response?.data?.code === 50013) {
+            console.log('⚠️ Bot needs MANAGE_GUILD permission');
+        }
+        
+        isClaiming = false;
     }
 }
 
+// MAIN LOOP
 setInterval(async () => {
     checks++;
     
-    if (Date.now() - lastLog > 30000) {
-        console.log(`[${new Date().toLocaleTimeString()}] Still alive (${checks} checks)`);
-        lastLog = Date.now();
+    // Log every 10 seconds
+    if (checks % 10 === 0) {
+        console.log(`[${new Date().toLocaleTimeString()}] Checks: ${checks}`);
     }
     
-    if (await checkVanity()) {
-        console.log(`🚨 ${VANITY} IS FREE!`);
+    const isFree = await checkVanity();
+    
+    if (isFree && !isClaiming) {
+        console.log(`🎯 DETECTED FREE: ${VANITY}`);
         await claimVanity();
     }
 }, CHECK_EVERY);
 
-console.log('✅ Sniper running. Waiting...');
+console.log('✅ Sniper active. Waiting for playmate...');
 
-// Keep process alive
-process.on('uncaughtException', (err) => {
-    console.log('Uncaught error:', err.message);
+// Add express for Render health check
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.json({
+        status: 'sniping',
+        target: VANITY,
+        checks: checks,
+        isClaiming: isClaiming
+    });
 });
-process.on('unhandledRejection', (err) => {
-    console.log('Unhandled rejection:', err.message);
+
+app.listen(PORT, () => {
+    console.log(`🌐 Health check on port ${PORT}`);
 });
