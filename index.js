@@ -1,99 +1,135 @@
-// SIMPLE DISCORD BOT FOR MOBILE DEPLOYMENT
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
-require('dotenv').config();
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const express = require('express');
 
-console.log('🚀 Bot starting...');
+console.log('🚀 Starting Discord bot...');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
   ]
 });
 
-// Your server ID
 const YOUR_SERVER_ID = '1447204367089270874';
 const LOG_CHANNEL_ID = '1457870506505011331';
 
-// Simple detector
 function checkMessage(content) {
-  const warnings = [];
+  const redFlags = [];
+  let detectedAge = null;
   
-  // Check for underage (under 18)
-  const ageMatch = content.match(/\b(1[0-7])\s*(m|f|yo|years?)\b/i);
+  // Check for underage (ONLY 1-17)
+  const ageMatch = content.match(/\b(1[0-7])\s*(?:m|f|male|female|yo|years?)?\b/i);
   if (ageMatch) {
-    warnings.push(`UNDERAGE (${ageMatch[1]})`);
+    const age = parseInt(ageMatch[1]);
+    if (age < 18) {
+      redFlags.push('underage');
+      detectedAge = age;
+    }
   }
   
-  // Check reversal symbols
+  // Reversal symbols
   if (/[🔄↩↪]/.test(content)) {
-    warnings.push('REVERSAL SYMBOL');
+    redFlags.push('reversal symbols');
   }
   
-  // Check "looking for older"
-  if (/looking for.*(older|daddy)/i.test(content)) {
-    warnings.push('SEEKING OLDER');
+  // Seeking older
+  if (/looking for.*(?:older|daddy|mature)/i.test(content)) {
+    redFlags.push('seeking older');
   }
   
-  // Check "dms open"
-  if (/dms? open/i.test(content)) {
-    warnings.push('DMS OPEN');
+  // DMs open with underage
+  if (/dms? open.*\b(1[0-7])\b/i.test(content)) {
+    redFlags.push('dms open');
   }
   
-  // Check suspicious age (50+)
-  if (/(5[0-9]|6[0-9])\s*(m|f)/i.test(content)) {
-    warnings.push('SUSPICIOUS AGE');
+  // Suspicious high age (50+)
+  if (/(5[0-9]|6[0-9]|7[0-9])\s*(?:m|f)/i.test(content)) {
+    redFlags.push('suspiciously high age');
   }
   
   return {
-    isBad: warnings.length > 0,
-    warnings,
-    score: warnings.length * 30
+    isBad: redFlags.length > 0,
+    reasons: redFlags,
+    age: detectedAge,
+    score: redFlags.length * 30
   };
 }
 
-// When bot is ready
 client.once('ready', () => {
-  console.log(`✅ Bot online as ${client.user.tag}`);
-  console.log(`✅ Server: ${YOUR_SERVER_ID}`);
-  console.log(`✅ Log channel: ${LOG_CHANNEL_ID}`);
-  
+  console.log(`✅ Bot online: ${client.user.tag}`);
   client.user.setActivity('for minors ⚠️', { type: 'WATCHING' });
 });
 
-// Check every message
 client.on('messageCreate', async (message) => {
-  // Ignore bots and DMs
   if (message.author.bot) return;
-  if (!message.guild) return;
+  if (!message.guild || message.guild.id !== YOUR_SERVER_ID) return;
   
-  // Only check your server
-  if (message.guild.id !== YOUR_SERVER_ID) return;
+  const result = checkMessage(message.content);
   
-  const check = checkMessage(message.content);
-  
-  if (check.isBad) {
+  if (result.isBad) {
     try {
-      // Delete the message
       await message.delete();
-      console.log(`🗑️ Deleted message from ${message.author.tag}`);
+      console.log(`🗑️ Deleted from ${message.author.tag}`);
       
-      // Send to log channel
       const logChannel = message.guild.channels.cache.get(LOG_CHANNEL_ID);
       if (logChannel) {
-        const embed = new EmbedBuilder()
-          .setColor('#ff0000')
-          .setTitle('🚨 Minor Detected')
-          .setDescription(`**User:** ${message.author.tag}\n**Score:** ${check.score}/100`)
-          .addFields(
-            { name: 'Reasons', value: check.warnings.join('\n') },
-            { name: 'Message', value: message.content.substring(0, 1000) }
-          )
-          .setTimestamp();
+        // Get current time
+        const now = new Date();
+        const timeString = now.toLocaleTimeString('en-US', { 
+          hour: 'numeric', 
+          minute: '2-digit', 
+          hour12: true 
+        }).toLowerCase();
         
-        await logChannel.send({ embeds: [embed] });
-        console.log(`📝 Logged to channel ${LOG_CHANNEL_ID}`);
+        const dateString = `Today at ${timeString}`;
+        
+        // Create age display if found
+        const ageDisplay = result.age ? `${result.age} ` : '';
+        const emojiDisplay = result.age ? '❤️' : '';
+        
+        // Create embed EXACTLY like your example
+        const embed = new EmbedBuilder()
+          .setColor('#2b2d31')
+          .setDescription(
+            `**APP**\n` +
+            `**${dateString}**\n\n` +
+            `**${message.author.username}**\n` +
+            `${ageDisplay}${emojiDisplay}\n` +
+            `\`id: ${message.author.id} | reason: ${result.reasons[0] || 'suspicious content'} |\`\n` +
+            `\`${dateString}\`\n\n` +
+            `✅ ban • ⚠️ ignore`
+          )
+          .setFooter({ 
+            text: `ignored by @so? (edited)`
+          });
+        
+        // Create buttons
+        const row = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId(`ban_${message.author.id}`)
+              .setLabel('ban')
+              .setStyle(ButtonStyle.Danger),
+            new ButtonBuilder()
+              .setCustomId(`ignore_${message.author.id}`)
+              .setLabel('ignore')
+              .setStyle(ButtonStyle.Secondary)
+          );
+        
+        // Send embed with buttons
+        const logMessage = await logChannel.send({ 
+          embeds: [embed],
+          components: [row]
+        });
+        
+        // Add reactions
+        await logMessage.react('✅');
+        await logMessage.react('⚠️');
+        
+        console.log(`📝 Logged: ${message.author.username}`);
       }
       
     } catch (error) {
@@ -102,20 +138,86 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// Login with token from Railway
-client.login(process.env.BOT_TOKEN).catch(error => {
-  console.error('❌ Login failed:', error.message);
+// Handle button clicks
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  
+  const [action, userId] = interaction.customId.split('_');
+  
+  if (action === 'ban') {
+    try {
+      const member = await interaction.guild.members.fetch(userId);
+      await member.ban({ reason: 'Auto-mod: Underage' });
+      await interaction.reply({ content: `✅ Banned ${member.user.tag}`, ephemeral: true });
+      
+      const embed = EmbedBuilder.from(interaction.message.embeds[0])
+        .setFooter({ text: `banned by ${interaction.user.tag}` });
+      await interaction.message.edit({ embeds: [embed], components: [] });
+      
+    } catch (error) {
+      await interaction.reply({ content: '❌ Could not ban', ephemeral: true });
+    }
+  }
+  
+  if (action === 'ignore') {
+    await interaction.reply({ content: '⚠️ Ignored', ephemeral: true });
+    
+    const embed = EmbedBuilder.from(interaction.message.embeds[0])
+      .setFooter({ text: `ignored by ${interaction.user.tag}` });
+    await interaction.message.edit({ embeds: [embed], components: [] });
+  }
 });
 
-// Simple health check
-const express = require('express');
+// Handle reactions
+client.on('messageReactionAdd', async (reaction, user) => {
+  if (user.bot) return;
+  if (reaction.message.channel.id !== LOG_CHANNEL_ID) return;
+  
+  const embed = reaction.message.embeds[0];
+  if (!embed) return;
+  
+  const idMatch = embed.description?.match(/id:\s*(\d+)/);
+  if (!idMatch) return;
+  
+  const userId = idMatch[1];
+  
+  if (reaction.emoji.name === '✅') {
+    try {
+      const member = await reaction.message.guild.members.fetch(userId);
+      await member.ban({ reason: 'Reaction ban' });
+      
+      const updatedEmbed = EmbedBuilder.from(embed)
+        .setFooter({ text: `banned by ${user.tag}` });
+      await reaction.message.edit({ embeds: [updatedEmbed], components: [] });
+      
+    } catch (error) {
+      console.log('Ban error:', error.message);
+    }
+  }
+  
+  if (reaction.emoji.name === '⚠️') {
+    const updatedEmbed = EmbedBuilder.from(embed)
+      .setFooter({ text: `ignored by ${user.tag}` });
+    await reaction.message.edit({ embeds: [updatedEmbed], components: [] });
+  }
+  
+  await reaction.users.remove(user.id);
+});
+
+// Health check
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.get('/', (req, res) => {
-  res.send('Bot is running!');
+  res.json({ status: 'online', bot: client.user?.tag || 'Starting...' });
 });
 
 app.listen(PORT, () => {
-  console.log(`🌐 Health check on port ${PORT}`);
+  console.log(`🌐 Health check: http://localhost:${PORT}`);
+});
+
+// Login
+client.login(process.env.BOT_TOKEN).catch(error => {
+  console.error('❌ Login failed:', error.message);
+  process.exit(1);
 });
