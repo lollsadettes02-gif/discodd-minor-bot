@@ -15,102 +15,136 @@ const client = new Client({
 
 const YOUR_SERVER_ID = '1447204367089270874';
 const LOG_CHANNEL_ID = '1457870506505011331';
-const SPECIFIC_CHANNEL_ID = '1447208095217619055'; // Your specific channel
+const SPECIFIC_CHANNEL_ID = '1447208095217619055';
+
+// ====== SMART AGE DETECTION ======
+function extractAge(content) {
+  const text = content.toLowerCase().replace(/\s+/g, ' ');
+  let age = null;
+  
+  // Pattern 1: Direct age at start (like "20 looking for fun")
+  const startPattern = /^(\d{1,2})\s+(?:top|bottom|verse|dom|sub|femboy|masc|looking|dm|dms|send|any)/i;
+  const startMatch = text.match(startPattern);
+  if (startMatch) {
+    const num = parseInt(startMatch[1]);
+    if (num >= 1 && num <= 99) {
+      return num;
+    }
+  }
+  
+  // Pattern 2: Common age formats
+  const patterns = [
+    /\b(\d{1,2})\s*(?:m|f|male|female|yo|y\.o\.|years?|yrs?)\b/i,
+    /\b(?:age|aged)\s*(\d{1,2})\b/i,
+    /\b(\d{1,2})\s*\/\s*(?:m|f)\b/i,
+    /\b(?:m|f)\s*\/\s*(\d{1,2})\b/i,
+    /\b(\d{1,2})\s*(?:top|bottom|verse)\b/i,
+    /\b(?:top|bottom|verse)\s*(\d{1,2})\b/i,
+    /\bdms?\s*(?:open|closed)?\s*(\d{1,2})\b/i,
+    /\b(\d{1,2})\s*dms?\b/i,
+    /\bsend\s*(?:age|asl)?\s*(\d{1,2})\b/i,
+  ];
+  
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const num = parseInt(match[1]);
+      if (num >= 1 && num <= 99) {
+        return num;
+      }
+    }
+  }
+  
+  // Pattern 3: Standalone age in context
+  const words = text.split(' ');
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i].replace(/[^\d]/g, '');
+    if (word && !isNaN(word)) {
+      const num = parseInt(word);
+      if (num >= 1 && num <= 99) {
+        // Check context around the number
+        const context = words.slice(Math.max(0, i - 2), Math.min(words.length, i + 3)).join(' ');
+        const ageIndicators = ['top', 'bottom', 'verse', 'dom', 'sub', 'looking', 'dm', 'dms', 'send', 'age', 'male', 'female', 'm', 'f', 'yo'];
+        const isAgeContext = ageIndicators.some(indicator => 
+          context.includes(indicator)
+        );
+        
+        if (isAgeContext) {
+          return num;
+        }
+      }
+    }
+  }
+  
+  return null;
+}
 
 function checkMessage(content, attachments, channelId) {
   const redFlags = [];
-  let detectedAge = null;
-  let ageInMessage = false;
+  let shouldLog = false;
   
-  const cleanContent = content.toLowerCase();
+  const age = extractAge(content);
   
-  // ====== AGE DETECTION ======
-  const agePatterns = [
-    /\b(\d{1,2})\s*(?:m|f|male|female)\b/i,
-    /\b(\d{1,2})\s*(?:yo|y\.o\.)\b/i,
-    /\b(\d{1,2})\s*(?:years?|yrs?)\s*old\b/i,
-    /\b(\d{1,2})\s*(?:years?|yrs?)\b/i,
-    /\bage\s*(\d{1,2})\b/i,
-    /\b(\d{1,2})\s*\/\s*[mf]\b/i,
-    /\b[MF]\s*\/\s*(\d{1,2})\b/i,
-  ];
-  
-  // Check if ANY age pattern exists
-  for (const pattern of agePatterns) {
-    const match = cleanContent.match(pattern);
-    if (match) {
-      ageInMessage = true;
-      detectedAge = parseInt(match[1]);
-      break;
+  // ====== UNDERAGE DETECTION ======
+  if (age !== null) {
+    if (age < 18) {
+      redFlags.push(`underage (${age})`);
+      shouldLog = true;
+    } else if (age > 50) {
+      redFlags.push(`suspicious age (${age})`);
+      shouldLog = true;
     }
+  }
+  
+  // ====== REVERSAL SYMBOLS ======
+  if (/[🔄↩↪]/.test(content)) {
+    redFlags.push('reversal symbols');
+    shouldLog = true;
+  }
+  
+  // ====== SEEKING OLDER ======
+  if (/looking for.*(?:older|daddy|mature)/i.test(content)) {
+    redFlags.push('seeking older');
+    shouldLog = true;
+  }
+  
+  // ====== DMS OPEN WITH AGE ======
+  if (/dms? open/i.test(content.toLowerCase()) && age !== null && age < 30) {
+    redFlags.push('dms open with age');
+    shouldLog = true;
   }
   
   // ====== SPECIFIC CHANNEL RULES ======
   if (channelId === SPECIFIC_CHANNEL_ID) {
-    // Rule 1: MUST have age
-    if (!ageInMessage) {
+    const hasAttachments = attachments.size > 0;
+    const hasValidAttachments = hasAttachments && 
+      Array.from(attachments.values()).every(att => 
+        att.url.includes('cdn.discordapp.com') || 
+        att.url.includes('media.discordapp.net') ||
+        att.contentType?.startsWith('image/') ||
+        att.contentType?.startsWith('video/')
+      );
+    
+    if (!age) {
       redFlags.push('no age (channel rule)');
     }
     
-    // Rule 2: MUST have attachments (images/videos)
-    const hasAttachments = attachments.size > 0;
-    if (!hasAttachments) {
-      redFlags.push('no attachments (channel rule)');
-    } else {
-      // Check attachments are NOT links (must be uploaded files)
-      const allAttachments = Array.from(attachments.values());
-      const hasLinks = allAttachments.some(att => 
-        att.url.match(/\.(com|net|org|io|me|xyz|link|url)\//i) ||
-        att.url.includes('http') && !att.url.includes('cdn.discordapp.com')
-      );
-      
-      if (hasLinks) {
-        redFlags.push('links not allowed (channel rule)');
-      }
+    if (!hasValidAttachments) {
+      redFlags.push('no valid attachments (channel rule)');
     }
-  } else {
-    // REGULAR CHANNELS: Just need age
-    if (!ageInMessage) {
-      redFlags.push('no age provided');
-    }
-  }
-  
-  // ====== UNDERAGE DETECTION (ALL CHANNELS) ======
-  if (detectedAge !== null) {
-    if (detectedAge < 18) {
-      redFlags.push(`underage (${detectedAge})`);
-    } else if (detectedAge > 50) {
-      redFlags.push(`suspicious age (${detectedAge})`);
-    }
-  }
-  
-  // ====== OTHER RED FLAGS ======
-  if (/[🔄↩↪]/.test(content)) {
-    redFlags.push('reversal symbols');
-  }
-  
-  if (/looking for.*(?:older|daddy|mature)/i.test(content)) {
-    redFlags.push('seeking older');
-  }
-  
-  if (/dms? open/i.test(cleanContent) && /\b\d{1,2}\b/.test(cleanContent)) {
-    redFlags.push('dms open');
   }
   
   return {
     isBad: redFlags.length > 0,
+    shouldLog: shouldLog,
     reasons: redFlags,
-    age: detectedAge,
-    noAgeProvided: !ageInMessage,
-    originalMessage: content,
-    hasAttachments: attachments.size > 0,
-    score: redFlags.length * 30
+    age: age,
+    originalMessage: content
   };
 }
 
 client.once('ready', () => {
   console.log(`✅ Bot online: ${client.user.tag}`);
-  console.log(`✅ Specific channel: ${SPECIFIC_CHANNEL_ID} (age + attachments required)`);
   client.user.setActivity('checking ages ⚠️', { type: 'WATCHING' });
 });
 
@@ -123,89 +157,60 @@ client.on('messageCreate', async (message) => {
   if (result.isBad) {
     try {
       await message.delete();
-      console.log(`🗑️ Deleted from ${message.author.tag} in #${message.channel.name} - ${result.reasons[0]}`);
+      console.log(`🗑️ Deleted from ${message.author.tag}: ${result.reasons[0]}`);
       
-      // Only send DM warning for UNDERAGE, not for "no age" in specific channel
-      const isUnderage = result.reasons.some(r => r.includes('underage'));
-      if (isUnderage) {
-        try {
-          await message.author.send(
-            `⚠️ **Your message in ${message.guild.name} was deleted.**\n` +
-            `**Reason:** ${result.reasons.join(', ')}\n` +
-            `**Channel:** ${message.channel.name}\n` +
-            `Please follow server rules.`
-          );
-        } catch (dmError) {
-          // User has DMs closed
-        }
-      }
-      
-      const logChannel = message.guild.channels.cache.get(LOG_CHANNEL_ID);
-      if (logChannel) {
-        // Get current time
-        const now = new Date();
-        const timeString = now.toLocaleTimeString('en-US', { 
-          hour: 'numeric', 
-          minute: '2-digit', 
-          hour12: true 
-        }).toLowerCase();
-        
-        const dateString = `Today at ${timeString}`;
-        
-        // Truncate message if too long
-        const truncatedMessage = message.content.length > 500 
-          ? message.content.substring(0, 497) + '...' 
-          : message.content;
-        
-        // Determine if we should show buttons
-        const shouldShowButtons = result.reasons.some(r => 
-          r.includes('underage') || r.includes('suspicious')
-        );
-        
-        // Create the embed
-        const embed = new EmbedBuilder()
-          .setColor(shouldShowButtons ? '#2b2d31' : '#808080')
-          .setDescription(
-            `**APP**\n` +
-            `**${dateString}**\n\n` +
-            `**${message.author.username}**\n` +
-            `**Channel:** ${message.channel.name}\n` +
-            `\`id: ${message.author.id} | reason: ${result.reasons[0] || 'rule violation'} |\`\n` +
-            `\`${dateString}\`\n\n` +
-            `**Message:**\n${truncatedMessage}\n\n` +
-            (shouldShowButtons ? `✅ ban • ⚠️ ignore` : `⚠️ message deleted`)
-          )
-          .setFooter({ 
-            text: shouldShowButtons ? `pending action` : `auto-deleted` 
-          });
-        
-        if (shouldShowButtons) {
-          // PROPER BUTTONS (not emojis in text)
+      // === ONLY LOG TO BANS CHANNEL IF SHOULDLOG ===
+      if (result.shouldLog) {
+        const logChannel = message.guild.channels.cache.get(LOG_CHANNEL_ID);
+        if (logChannel) {
+          const now = new Date();
+          const timeString = now.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit', 
+            hour12: true 
+          }).toLowerCase();
+          
+          const dateString = `Today at ${timeString}`;
+          
+          const truncatedMessage = message.content.length > 500 
+            ? message.content.substring(0, 497) + '...' 
+            : message.content;
+          
+          const embed = new EmbedBuilder()
+            .setColor('#2b2d31')
+            .setDescription(
+              `**APP**\n` +
+              `**${dateString}**\n\n` +
+              `**${message.author.username}**\n` +
+              `**Channel:** ${message.channel.name}\n` +
+              `\`id: ${message.author.id} | reason: ${result.reasons[0]} |\`\n` +
+              `\`${dateString}\`\n\n` +
+              `**Message:**\n${truncatedMessage}\n\n` +
+              `✅ ban • ⚠️ ignore`
+            )
+            .setFooter({ text: `pending action` });
+          
           const row = new ActionRowBuilder()
             .addComponents(
               new ButtonBuilder()
                 .setCustomId(`ban_${message.author.id}_${message.id}`)
                 .setLabel('ban')
-                .setStyle(ButtonStyle.Danger), // Red button
+                .setStyle(ButtonStyle.Danger),
               new ButtonBuilder()
                 .setCustomId(`ignore_${message.author.id}_${message.id}`)
                 .setLabel('ignore')
-                .setStyle(ButtonStyle.Secondary) // Grey button
+                .setStyle(ButtonStyle.Secondary)
             );
           
           await logChannel.send({ 
             embeds: [embed],
             components: [row]
           });
-        } else {
-          // No buttons for simple rule violations
-          await logChannel.send({ 
-            embeds: [embed]
-          });
+          
+          console.log(`📝 Logged to bans channel: ${message.author.username}`);
         }
-        
-        console.log(`📝 Logged: ${message.author.username} - ${result.reasons[0]}`);
       }
+      // === NO LOGGING FOR SIMPLE RULE VIOLATIONS ===
       
     } catch (error) {
       console.log('⚠️ Error:', error.message);
@@ -235,7 +240,7 @@ client.on('interactionCreate', async (interaction) => {
   if (action === 'ban') {
     try {
       const member = await interaction.guild.members.fetch(userId);
-      await member.ban({ reason: `Auto-mod: ${embedData.description?.split('reason: ')[1]?.split(' |')[0] || 'Suspicious content'}` });
+      await member.ban({ reason: `Auto-mod: ${embedData.description?.split('reason: ')[1]?.split(' |')[0] || 'Minor detected'}` });
       
       const updatedEmbed = new EmbedBuilder()
         .setColor('#ff0000')
@@ -308,8 +313,7 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'online', 
     bot: client.user?.tag || 'Starting...',
-    uptime: process.uptime(),
-    rules: `Channel ${SPECIFIC_CHANNEL_ID}: Age + Attachments required`
+    uptime: process.uptime()
   });
 });
 
